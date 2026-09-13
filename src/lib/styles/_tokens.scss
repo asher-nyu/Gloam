@@ -1,0 +1,80 @@
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  color-scheme: light dark;
+  color: var(--ink);
+  background: var(--canvas);
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+  --canvas: #f5f5f7;
+  --surface: #fff;
+  --ink: #20212b;
+  --secondary: #656570;
+  --line: #e8e8ed;
+  --soft: #f3f3f6;
+  --hover: #ececf1;
+  --selected-surface: #f0eff8;
+  --selected-line: #b8b3d1;
+  --accent: #5155a5;
+  --accent-soft: #eeeef9;
+  --focus: #266bcc;
+  --uv-bar: #8f88b5;
+  --selection-background: #dddff5;
+  --selection-ink: #20212b;
+  --dialog-surface: #fff;
+  --dialog-overlay: rgb(21 22 37 / 32%);
+  --dialog-shadow: 0 28px 90px #14152733;
+  --radius: 24px;
+  --card-inset: 32px;
+  --shadow: 0 2px 12px rgb(27 27 51 / 3%);
+  --sunset: #9b5125;
+  --civil: #985271;
+  --nautical: #6961ab;
+  --night: #454d85;
+}
+
+// Follow the platform preference in CSS, including first paint and live changes.
+@media (prefers-color-scheme: dark) {
+  :root {
+    --canvas: #101012;
+    --surface: #1c1c1e;
+    --ink: #f5f5f7;
+    --secondary: #a1a1aa;
+    --line: #373739;
+    --soft: #28282b;
+    --hover: #333336;
+    --selected-surface: #333044;
+    --selected-line: #79749b;
+    --accent: #b7b4f5;
+    --accent-soft: #292840;
+    --focus: #64a5ff;
+    --uv-bar: #aaa3d8;
+    --selection-background: #454574;
+    --selection-ink: #f5f5f7;
+    --dialog-surface: #242426;
+    --dialog-overlay: rgb(0 0 0 / 56%);
+    --dialog-shadow: 0 28px 90px #00000080;
+    --shadow: 0 2px 12px rgb(0 0 0 / 20%);
+    --sunset: #eab586;
+    --civil: #dca1bd;
+    --nautical: #b4ade8;
+    --night: #a4b0e7;
+  }
+}
+
+@mixin narrow {
+  @media (max-width: 640px) {
+    @content;
+  }
+}
+
+@mixin compact {
+  @media (max-width: 900px) {
+    @content;
+  }
+}
+
+@media (max-width: 640px) {
+  :root {
+    --card-inset: 20px;
+  }
+}

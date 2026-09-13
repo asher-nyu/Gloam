@@ -1,0 +1,11 @@
+allowBuilds:
+  '@parcel/watcher': true
+  cypress: true
+  esbuild: true
+  svelte-preprocess: true
+  unrs-resolver: true
+
+# Istanbul 8 still requests test-exclude 7, which pulls in deprecated glob 10.
+# Version 8 preserves the exclusion API and uses the maintained glob release.
+overrides:
+  'babel-plugin-istanbul@8>test-exclude': ^8.0.0

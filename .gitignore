@@ -1,0 +1,14 @@
+node_modules/
+.svelte-kit/
+.vercel/
+build/
+storybook-static/
+.env
+.env.*
+!.env.example
+.cache/
+.sites-runtime/
+coverage/
+cypress/screenshots/
+cypress/videos/
+.DS_Store

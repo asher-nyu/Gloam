@@ -1,0 +1,12 @@
+.svelte-kit/
+.vercel/
+.cache/
+build/
+node_modules/
+storybook-static/
+pnpm-lock.yaml
+src/lib/server/data/cities.json
+tests/fixtures/usno/*.html
+cypress/screenshots/
+cypress/videos/
+coverage/

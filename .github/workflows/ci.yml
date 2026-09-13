@@ -1,0 +1,32 @@
+name: Frontend quality
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: pnpm/action-setup@v6.1.0
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm lint
+      - run: pnpm test
+      - run: node --test scripts/*.test.mjs
+      - run: pnpm build
+      - run: pnpm check:vercel
+      - run: pnpm build:storybook
+      - run: pnpm build:node
+      - run: node scripts/e2e.mjs
+      - uses: actions/upload-artifact@v7.0.1
+        if: failure()
+        with:
+          name: browser-failures
+          path: cypress/screenshots
