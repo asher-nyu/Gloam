@@ -28,5 +28,9 @@ export default {
   moduleNameMapper: { '^\\$lib/(.*)$': '<rootDir>/src/lib/$1' },
   moduleFileExtensions: ['ts', 'js', 'svelte', 'json'],
   setupFilesAfterEnv: ['<rootDir>/tests/jest-setup.js'],
-  collectCoverageFrom: ['src/lib/domain/**/*.ts', 'src/lib/server/usno*.ts'],
+  collectCoverageFrom: [
+    'src/lib/domain/**/*.ts',
+    'src/lib/usno/**/*.ts',
+    'src/lib/server/usno*.ts',
+  ],
 };

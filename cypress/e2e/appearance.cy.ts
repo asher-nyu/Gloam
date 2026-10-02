@@ -1,3 +1,5 @@
+import { interceptUsno, waitForEvening } from '../support/usno';
+
 const newYork = {
   id: 5128581,
   name: 'New York City',
@@ -78,18 +80,15 @@ function openPlanner(
   setSystemAppearance(appearance);
   // Keep debounce timeouts real while making the displayed date and clock deterministic.
   cy.clock(Date.UTC(2026, 8, 13, 18), ['Date', 'setInterval', 'clearInterval']);
-  cy.intercept('GET', '/api/evening?*', (req) => {
-    const date = new URL(req.url).searchParams.get('date')!;
-    const offset = Date.parse(`${date}T00:00:00Z`) - Date.parse(`${template.date}T00:00:00Z`);
-    req.reply({
+  // Keep the London fixture's sunset within its local day while later phases cross midnight.
+  interceptUsno(template, 'appearanceEvening', {
+    [london.latitude.toFixed(4)]: {
       ...template,
-      date,
-      events: template.events.map((event) => ({
-        ...event,
-        at: event.at == null ? null : new Date(Date.parse(event.at) + offset).toISOString(),
-      })),
-    });
-  }).as('appearanceEvening');
+      events: template.events.map((event) =>
+        event.kind === 'sunset' ? { ...event, at: '2026-09-13T20:08:00.000Z' } : event,
+      ),
+    },
+  });
   cy.intercept('GET', '/api/uv?*', uv).as('appearanceUv');
   cy.intercept('GET', '/api/cities?q=*', (req) => {
     const query = new URL(req.url).searchParams.get('q')!.toLowerCase();
@@ -101,7 +100,7 @@ function openPlanner(
       win.localStorage.setItem('gloam.city.v1', JSON.stringify(newYork));
     },
   });
-  cy.wait('@appearanceEvening');
+  waitForEvening('appearanceEvening');
   cy.wait('@appearanceUv');
   cy.get('.evening-card .event').should('have.length', 4);
 }
@@ -245,12 +244,12 @@ describe('System appearance', { browser: { family: 'chromium' } }, () => {
     cy.get('[aria-label="Search cities"]').type('London', { delay: 0 });
     cy.wait('@appearanceCities');
     cy.contains('.results button', 'London').click();
-    cy.wait('@appearanceEvening');
+    waitForEvening('appearanceEvening');
     cy.wait('@appearanceUv');
     cy.get('h1').should('have.text', 'London');
     cy.get('.city-clock .clock-digits').should('have.text', '7:00:00');
     cy.get('input[type="date"]').invoke('val', '2026-09-20').trigger('change', { force: true });
-    cy.wait('@appearanceEvening');
+    waitForEvening('appearanceEvening');
     cy.wait('@appearanceUv');
     cy.get('.timezone-label').should('contain.text', 'British Summer Time (UTC+01:00)');
     cy.get('.event').last().find('.offset').should('have.text', 'Next day');
@@ -340,7 +339,7 @@ describe('System appearance', { browser: { family: 'chromium' } }, () => {
       'outsideHorizon',
     );
     cy.get('[aria-label="Next evening"]').click();
-    cy.wait('@appearanceEvening');
+    waitForEvening('appearanceEvening');
     cy.wait('@outsideHorizon');
     for (const appearance of ['light', 'dark'] as const) {
       setSystemAppearance(appearance);

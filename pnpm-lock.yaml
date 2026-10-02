@@ -29,6 +29,9 @@ importers:
       fflate:
         specifier: ^0.8.3
         version: 0.8.3
+      undici:
+        specifier: ^7.30.0
+        version: 7.30.0
       zod:
         specifier: ^4.3.6
         version: 4.6.2
@@ -3943,6 +3946,10 @@ packages:
 
   undici-types@8.10.2:
     resolution: {integrity: sha512-7/+aSjzkUoLc92hV22bTW4aGanXf800zbwguhcICs0OAoCF9wDOE4wkopQ+SqfhXZm8mCK8gHpdTs7pZUWzK3w==}
+
+  undici@7.30.0:
+    resolution: {integrity: sha512-dkrQXeHSaoamnItlYbmzG0wFYrM0ZwDxCIg0A7aKjTyyhh9svRzCNFEzV+Vm05/yehjCzjDZ31KXfGEjYSztDQ==}
+    engines: {node: '>=20.18.1'}
 
   undici@8.10.2:
     resolution: {integrity: sha512-/y4/bH9YNU5hi9NIrpOuvGXFcxrj3CMrV+/AYpowAYTpHn8gX/XPFjNy766FPoYY0miQhdW977JFWKGNhBdwyQ==}
@@ -8024,6 +8031,8 @@ snapshots:
   undici-types@7.18.2: {}
 
   undici-types@8.10.2: {}
+
+  undici@7.30.0: {}
 
   undici@8.10.2: {}
 

@@ -29,19 +29,27 @@ Open the local address printed by Vite. Gloam estimates an initial city through 
 
 Appearance follows the operating system through CSS `prefers-color-scheme`, from the initial render through changes while the page is open. Shared light/dark tokens cover the page, dialogs, controls, focus indicators, and UV bars. Native controls inherit `color-scheme`; browser theme colors and the shared logo/favicon adapt as well.
 
-`src/lib/domain` contains shared time/date logic and validated data contracts. `src/lib/server` contains server-only source adapters and bounded caches. `src/lib/components` contains reusable UI. `src/routes/api` exposes same-origin endpoints. City queries are resolved on the server against an automatically refreshed GeoNames catalog.
+`src/lib/domain` contains shared time/date logic and validated data contracts. `src/lib/usno` contains the annual-table parser, event calculations, and browser source adapter. `src/lib/server` contains server-only source adapters and city catalog storage. `src/lib/components` contains reusable UI. `src/routes/api` exposes same-origin endpoints. City queries are resolved on the server against an automatically refreshed GeoNames catalog.
 
 ## Data and scientific behavior
 
-**USNO:** all four event times are retrieved directly from the [annual table service](https://aa.usno.navy.mil/data/RS_OneYear). Tasks 0, 2, 3, and 4 supply sunset, civil, nautical, and astronomical events. Tables are requested in Universal Time; the parser preserves fixed-width cells, continuation rows, blank fields, and continuous-above/below markers. Successful annual-table responses are cached for 24 hours with request coalescing.
+**USNO:** the browser retrieves all four event times directly from the [annual table service](https://aa.usno.navy.mil/data/RS_OneYear), using its cross-origin access support. Tasks 0, 2, 3, and 4 supply sunset, civil, nautical, and astronomical events. Tables are requested in Universal Time; the parser preserves fixed-width cells, continuation rows, blank fields, and continuous-above/below markers. Every refresh fetches fresh tables from USNO.
+
+Browser requests use verified HTTPS, omit cookies and referrers, and bypass the HTTP cache. Network failures receive up to two retries, after 500 milliseconds and two seconds, within one 18-second deadline for the refresh. HTTP errors and invalid tables are reported as source failures. Returned HTML is parsed as data and never inserted into the page. Requests identify the application as `Gloam`.
+
+The server evening API shares the parser and event calculations, with a dedicated Node.js HTTPS connection pool and bounded connection-reset retries. Its error logs retain underlying transport codes without logging response bodies or event times. The [validation record](docs/QA.md#usno-connection-investigation-october-1-2026) distinguishes successful browser connections from the unresolved Node.js TLS resets.
+
+`pnpm check:usno` checks TCP and verified TLS connections, then requests and validates all four annual tables through the server request helper. It prints connection metadata and failure codes, saves no responses, and exits unsuccessfully if any table fails. This checks the Node.js connection independently of the browser connection used by the interface.
 
 The selected date belongs to the city. A sunset before noon is valid. Later twilight events are associated with that sunset, including events after local midnight. The city’s IANA time zone converts event instants with date-correct daylight saving. Choosing another city automatically updates the local date, clock, event times, UV hour labels, forecast timestamp, and copyright year. The time-zone label shows the full name and UTC offset for the planning date, such as “Time zone · Eastern Daylight Time (UTC−04:00)”. Today advances at the selected city’s midnight. The live clock continues to show the city’s current time, including seconds, while browsing future evenings. Its current date appears when it differs from the planning date.
 
 **NOAA:** the server downloads hourly GRIB2 files from [NOAA’s UV forecast archive](https://nomads.ncep.noaa.gov/pub/data/nccf/com/uvi/prod/) and reads the surface erythemal irradiance field (discipline 0, category 7, parameter 196). UV Index = irradiance in W/m² × 40. The field’s run and valid-time metadata are checked, and the nearest grid point supplies the city estimate. The app prefers the newest complete run; an earlier complete run can be used when the latest run is still being published. Each chart uses a single run and displays its model run time. Missing hours retain null values and appear as unavailable. Available run files determine the forecast window.
 
+USNO tables, NOAA directory listings, GRIB files, and computed forecasts are processed within each request and are not retained for reuse. Scientific API responses and browser fetches use `no-store`. Refreshing clears the previous results before contacting the sources; a failure reports unavailable data.
+
 **Solar events** presents four boundaries: Sunset, Civil twilight ends, Nautical twilight ends, and Astronomical twilight ends. Each time has a concise explanation of its meaning. Event labels and time values share a first-line baseline; text reflows for narrow screens and enlarged fonts. The copyright year follows the current date in the selected city, independently of the planning date.
 
-The UV chart starts roughly three hours before sunset and shows eight hourly forecast values. Twilight angles describe the Sun’s position relative to the horizon; they do not establish a medically safe or UV-free time outdoors.
+The browser passes the freshly calculated sunset to the UV endpoint, which validates its selected local date before querying NOAA. The UV chart starts roughly three hours before sunset and shows eight hourly forecast values. Twilight angles describe the Sun’s position relative to the horizon; they do not establish a medically safe or UV-free time outdoors.
 
 **Location:** ipwho.is estimates the initial location from the visitor’s IP address. Gloam uses the returned location fields to initialize the planner. VPN and mobile-network estimates can be inaccurate. City search uses the [GeoNames cities15000 catalog](https://download.geonames.org/export/dump/), which primarily covers places with population above 15,000 and administrative capitals. Smaller locations can use a nearby city.
 
@@ -94,4 +102,4 @@ pnpm build:node
 HOST=127.0.0.1 PORT=3000 ORIGIN=https://gloam.example.com pnpm start
 ```
 
-This target writes the Node server to `build`. Set `ORIGIN` to the actual trusted origin and configure the reverse proxy, TLS, and audience access controls for the chosen environment. The example binds to loopback. Cache limits and outbound NOAA concurrency are bounded for a single process; a larger deployment should share agency caches across instances and apply rate limits at the gateway.
+This target writes the Node server to `build`. Set `ORIGIN` to the actual trusted origin and configure the reverse proxy, TLS, and audience access controls for the chosen environment. The example binds to loopback. Outbound NOAA concurrency and its waiting queue are bounded for a single process; a larger deployment should apply rate limits at the gateway.

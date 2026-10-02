@@ -1,3 +1,12 @@
+import type { CyHttpMessages, Interception } from 'cypress/types/net-stubbing';
+import {
+  interceptUsno,
+  waitForEvening,
+  usnoAnnualUrl,
+  usnoHeaders,
+  replyWithAnnualTable,
+} from '../support/usno';
+
 const city = {
   id: 5128581,
   name: 'New York City',
@@ -71,34 +80,36 @@ const forecast = {
   retrievedAt: '2026-09-13T18:00:00Z',
 };
 
-function eveningForDate(date: string, template = evening) {
-  const offset = Date.parse(`${date}T00:00:00Z`) - Date.parse(`${template.date}T00:00:00Z`);
-  const shift = (at: string) => new Date(Date.parse(at) + offset).toISOString();
-  return {
-    ...template,
-    date,
-    events: template.events.map((event) => ({ ...event, at: shift(event.at) })),
-  };
-}
-
 function openPlanner({
   now = Date.UTC(2026, 8, 13, 18),
   selectedCity = city,
   template = evening,
-}: { now?: number; selectedCity?: typeof city; template?: typeof evening } = {}) {
+  tableCount = 4,
+}: {
+  now?: number;
+  selectedCity?: typeof city;
+  template?: typeof evening;
+  tableCount?: number;
+} = {}) {
   // Leave timeouts real so city-search debounce and request handling still run normally.
   cy.clock(now, ['Date', 'setInterval', 'clearInterval']);
-  cy.intercept('GET', '/api/evening?*', (req) => {
-    const date = new URL(req.url).searchParams.get('date')!;
-    req.reply(eveningForDate(date, template));
-  }).as('evening');
+  // London has an evening sunset before local midnight; its final phases cross midnight.
+  interceptUsno(template, 'evening', {
+    [london.latitude.toFixed(4)]: {
+      ...template,
+      events: template.events.map((event) =>
+        event.kind === 'sunset' ? { ...event, at: '2026-09-13T20:08:00.000Z' } : event,
+      ),
+    },
+  });
   cy.intercept('GET', '/api/uv?*', forecast).as('uv');
   cy.visit('/', {
     onBeforeLoad(win) {
       win.localStorage.setItem('gloam.city.v1', JSON.stringify(selectedCity));
+      cy.spy(win, 'fetch').as('browserFetch');
     },
   });
-  cy.wait('@evening');
+  waitForEvening('evening', tableCount);
   cy.wait('@uv');
   cy.get('[aria-label="Solar events"]').should('be.visible');
   cy.get('.timezone-label').should('be.visible').and('contain.text', 'Time zone');
@@ -157,17 +168,137 @@ function firstLineBaseline(element: Element) {
 }
 
 describe('Evening planner', () => {
+  it('requests all four official tables directly without server astronomy or retained responses', () => {
+    cy.intercept('GET', '/api/evening?*', { statusCode: 500 }).as('serverEvening');
+    openPlanner();
+    cy.get('@serverEvening.all').should('have.length', 0);
+    cy.get('@browserFetch').then((spy) => {
+      const requests = (spy as unknown as { getCalls(): { args: unknown[] }[] }).getCalls();
+      const astronomy = requests.filter(({ args }) =>
+        String(args[0]).startsWith('https://aa.usno.navy.mil/'),
+      );
+      expect(astronomy).to.have.length(4);
+      expect(
+        astronomy.map(({ args }) => new URL(String(args[0])).searchParams.get('task')).sort(),
+      ).to.deep.equal(['0', '2', '3', '4']);
+      astronomy.forEach(({ args }) => {
+        expect(args[1]).to.include({
+          cache: 'no-store',
+          credentials: 'omit',
+          mode: 'cors',
+          referrerPolicy: 'no-referrer',
+        });
+      });
+      const forecastRequest = requests.find(({ args }) => String(args[0]).startsWith('/api/uv?'));
+      expect(
+        new URL(String(forecastRequest!.args[0]), 'http://127.0.0.1:5173').searchParams.get(
+          'sunset',
+        ),
+      ).to.equal('2026-09-13T23:08:00.000Z');
+    });
+    cy.window().then((win) =>
+      expect(Object.keys(win.localStorage)).to.deep.equal(['gloam.city.v1']),
+    );
+    cy.get('input[type="date"]').invoke('val', '2026-09-20').trigger('change', { force: true });
+    waitForEvening();
+    cy.wait('@uv');
+    cy.get('@evening.all').should('have.length', 8);
+    cy.get('@serverEvening.all').should('have.length', 0);
+  });
+
+  it('ignores a previous date’s delayed tables and schedules UV only for the latest date', () => {
+    openPlanner();
+    let received = 0;
+    const held: (() => void)[] = [];
+    const latest = {
+      ...evening,
+      events: evening.events.map((event, index) => ({
+        ...event,
+        at: `2026-09-13T${['21:12', '21:40', '22:12', '22:45'][index]}:00.000Z`,
+      })),
+    };
+    cy.intercept('GET', usnoAnnualUrl, (request) => {
+      if (++received <= 4) {
+        request.alias = 'previousDateTables';
+        return new Promise<void>((resolve) => {
+          held.push(() => {
+            replyWithAnnualTable(request, evening);
+            resolve();
+          });
+        });
+      }
+      request.alias = 'latestDateTables';
+      replyWithAnnualTable(request, latest);
+    });
+    cy.get('[aria-label="Next evening"]').click();
+    cy.wrap(null).should(() => expect(held).to.have.length(4));
+    cy.get('.event, .uv-hours').should('not.exist');
+    cy.get('[aria-label="Next evening"]').click();
+    waitForEvening('latestDateTables');
+    cy.wait('@uv').then(({ request }) => {
+      const query = new URL(request.url).searchParams;
+      expect(query.get('date')).to.equal('2026-09-15');
+      expect(query.get('sunset')).to.equal('2026-09-15T21:12:00.000Z');
+    });
+    cy.then(() => held.forEach((release) => release()));
+    cy.wait(Array.from({ length: 4 }, () => '@previousDateTables' as const));
+    cy.get('input[type="date"]').should('have.value', '2026-09-15');
+    cy.get('.event').first().find('.digits').should('have.text', '5:12');
+    cy.get('@uv.all').should('have.length', 2);
+  });
+
+  it('ignores an earlier city’s delayed tables after a new city is selected', () => {
+    openPlanner();
+    const held: (() => void)[] = [];
+    cy.intercept('GET', '/api/cities?q=*', (request) => {
+      const query = new URL(request.url).searchParams.get('q')!.toLowerCase();
+      request.reply({ cities: query.includes('london') ? [london] : [city] });
+    }).as('switchCitySearch');
+    cy.intercept('GET', usnoAnnualUrl, (request: CyHttpMessages.IncomingHttpRequest) => {
+      if (new URL(request.url).searchParams.get('lat') === london.latitude.toFixed(4)) {
+        request.alias = 'previousCityTables';
+        return new Promise<void>((resolve) => {
+          held.push(() => {
+            replyWithAnnualTable(request, evening);
+            resolve();
+          });
+        });
+      }
+      request.alias = 'latestCityTables';
+      replyWithAnnualTable(request, evening);
+    });
+    cy.get('[aria-label^="Change city"]').click();
+    cy.get('[aria-label="Search cities"]').type('London', { delay: 0 });
+    cy.wait('@switchCitySearch');
+    cy.contains('.results button', 'London').click();
+    cy.wrap(null).should(() => expect(held).to.have.length(4));
+    cy.get('[aria-label^="Change city"]').click();
+    cy.get('[aria-label="Search cities"]').type('New York', { delay: 0 });
+    cy.wait('@switchCitySearch');
+    cy.contains('.results button', 'New York City').click();
+    waitForEvening('latestCityTables');
+    cy.wait('@uv').then(({ request }) => {
+      const query = new URL(request.url).searchParams;
+      expect(query.get('latitude')).to.equal(String(city.latitude));
+      expect(query.get('timezone')).to.equal(city.timezone);
+    });
+    cy.then(() => held.forEach((release) => release()));
+    cy.wait(Array.from({ length: 4 }, () => '@previousCityTables' as const));
+    cy.get('h1').should('have.text', 'New York City');
+    cy.get('.event').last().find('.digits').should('have.text', '8:41');
+    cy.get('.timezone-label').should('contain.text', 'Eastern Daylight Time');
+    cy.get('@uv.all').should('have.length', 2);
+  });
+
   it('advances the current clock with real browser timers', () => {
-    cy.intercept('GET', '/api/evening?*', (req) => {
-      req.reply(eveningForDate(new URL(req.url).searchParams.get('date')!));
-    }).as('realEvening');
+    interceptUsno(evening, 'realEvening');
     cy.intercept('GET', '/api/uv?*', forecast).as('realUv');
     cy.visit('/', {
       onBeforeLoad(win) {
         win.localStorage.setItem('gloam.city.v1', JSON.stringify(city));
       },
     });
-    cy.wait('@realEvening');
+    waitForEvening('realEvening');
     cy.wait('@realUv');
     cy.get('.city-clock time')
       .invoke('attr', 'datetime')
@@ -195,14 +326,25 @@ describe('Evening planner', () => {
     cy.get('input[aria-label="Search cities"]').type('London');
     cy.wait('@londonSearch');
     cy.contains('.results button', 'England, United Kingdom').click();
-    for (const request of ['@evening', '@uv']) {
-      cy.wait(request).then(({ request }) => {
-        const query = new URL(request.url).searchParams;
-        expect(query.get('timezone')).to.equal(london.timezone);
-        expect(query.get('latitude')).to.equal(String(london.latitude));
-        expect(query.get('longitude')).to.equal(String(london.longitude));
+    waitForEvening();
+    cy.get('@evening.all').then((interceptions) => {
+      const queries = (interceptions as unknown as Interception[])
+        .slice(-4)
+        .map(({ request }) => new URL(request.url).searchParams);
+      queries.forEach((query) => {
+        expect(query.get('lat')).to.equal(london.latitude.toFixed(4));
+        expect(query.get('lon')).to.equal(london.longitude.toFixed(4));
+        expect(query.get('year')).to.equal('2026');
       });
-    }
+      expect(queries.map((query) => query.get('task')).sort()).to.deep.equal(['0', '2', '3', '4']);
+    });
+    cy.wait('@uv').then(({ request }) => {
+      const query = new URL(request.url).searchParams;
+      expect(query.get('timezone')).to.equal(london.timezone);
+      expect(query.get('latitude')).to.equal(String(london.latitude));
+      expect(query.get('longitude')).to.equal(String(london.longitude));
+      expect(query.get('sunset')).to.equal('2026-09-13T20:08:00.000Z');
+    });
     cy.get('h1').should('have.text', 'London');
     cy.title().should('eq', 'Gloam');
     cy.get('.dialog-content').should('not.exist');
@@ -218,7 +360,7 @@ describe('Evening planner', () => {
     cy.get('.uv-footer').should('contain.text', '1:00 PM GMT+1');
     cy.get('select').should('not.exist');
     cy.reload();
-    cy.wait('@evening');
+    waitForEvening();
     cy.wait('@uv');
     cy.get('h1').should('have.text', 'London');
     cy.get('.timezone-label').should('contain.text', 'British Summer Time (UTC+01:00)');
@@ -256,7 +398,7 @@ describe('Evening planner', () => {
   it('shows the same static event format for a future planning date', () => {
     openPlanner();
     cy.get('input[type="date"]').invoke('val', '2026-09-20').trigger('change', { force: true });
-    cy.wait('@evening');
+    waitForEvening();
     expectStaticEvents();
     cy.get('.date-picker').should('contain.text', 'Sun, Sep 20, 2026');
     cy.get('.clock-date').should('contain.text', 'Sep 13, 2026');
@@ -268,7 +410,7 @@ describe('Evening planner', () => {
     cy.get('.clock-digits').should('have.text', '11:59:59');
     cy.get('.clock-date').should('not.exist');
     cy.tick(1000);
-    cy.wait('@evening');
+    waitForEvening();
     cy.get('input[type="date"]').should('have.value', '2026-09-14');
     cy.get('.date-picker').should('contain.text', 'Mon, Sep 14, 2026');
     cy.get('.clock-digits').should('have.text', '12:00:00');
@@ -285,7 +427,7 @@ describe('Evening planner', () => {
     cy.get('.city-clock time').should('have.attr', 'datetime', '2026-09-13T23:30:30.000Z');
     cy.get('input[type="date"]').should('have.value', '2026-09-13');
     cy.get('input[type="date"]').invoke('val', '2027-01-01').trigger('change', { force: true });
-    cy.wait('@evening');
+    waitForEvening();
     cy.get('.evening-card .event-time').should('have.length', 4);
     cy.get('.countdown, [role="timer"]').should('not.exist');
     cy.get('.city-clock .clock-date').should('contain.text', 'Sep 13, 2026');
@@ -296,7 +438,7 @@ describe('Evening planner', () => {
     cy.get('.city-clock .clock-digits').should('have.text', '7:30:31');
     cy.get('input[type="date"]').should('have.value', '2027-01-01');
     cy.contains('button', /^Today$/).click();
-    cy.wait('@evening');
+    waitForEvening();
     cy.get('.city-clock .clock-digits').should('have.text', '7:30:31');
     cy.get('.city-clock .clock-date').should('not.exist');
     cy.get('.city-clock .clock-label').should('have.text', 'Current time');
@@ -308,11 +450,12 @@ describe('Evening planner', () => {
     openPlanner({
       now: Date.parse('2026-12-31T23:59:59Z'),
       selectedCity: london,
+      tableCount: 8,
     });
     cy.get('footer').should('contain.text', '2026');
     cy.contains('footer a', 'Asher').should('have.attr', 'href', 'https://asher-nyu.com');
     cy.get('input[type="date"]').invoke('val', '2027-01-02').trigger('change', { force: true });
-    cy.wait('@evening');
+    waitForEvening();
     cy.get('footer').should('contain.text', '2026');
     cy.tick(1000);
     cy.get('footer').should('contain.text', '2027');
@@ -323,7 +466,7 @@ describe('Evening planner', () => {
     cy.get('input[aria-label="Search cities"]').type('Los Angeles');
     cy.wait('@losAngelesSearch');
     cy.contains('.results button', 'Los Angeles').click();
-    cy.wait('@evening');
+    waitForEvening('evening', 8);
     cy.wait('@uv');
     cy.get('h1').should('have.text', 'Los Angeles');
     cy.get('.timezone-label').should('contain.text', 'Pacific Standard Time (UTC−08:00)');
@@ -334,20 +477,28 @@ describe('Evening planner', () => {
   });
   it('recovers from source failures and keeps an unavailable event distinct', () => {
     openPlanner();
-    cy.intercept('GET', '/api/evening?*', {
+    cy.intercept('GET', usnoAnnualUrl, {
       statusCode: 502,
-      body: { error: 'USNO is temporarily unavailable.' },
-    });
+      headers: usnoHeaders,
+      body: 'Source unavailable',
+    }).as('failedTables');
+    cy.intercept('GET', '/api/uv?*', { statusCode: 502, body: { error: 'UV source unavailable' } });
     cy.get('[aria-label="Next evening"]').click();
+    cy.wait(Array.from({ length: 4 }, () => '@failedTables' as const));
     cy.get('[role="alert"]').should('contain.text', 'We couldn’t load evening times');
+    cy.get('.event, .uv-hours').should('not.exist');
     cy.title().should('eq', 'Gloam');
-    cy.intercept('GET', '/api/evening?*', {
-      ...eveningForDate('2026-09-14'),
-      events: eveningForDate('2026-09-14').events.map((event) =>
-        event.kind === 'astronomical' ? { ...event, at: null, status: 'unavailable' } : event,
-      ),
-    });
+    interceptUsno(
+      {
+        ...evening,
+        events: evening.events.map((event) =>
+          event.kind === 'astronomical' ? { ...event, at: null, status: 'unavailable' } : event,
+        ),
+      },
+      'recoveredTables',
+    );
     cy.contains('button', 'Try again').click();
+    waitForEvening('recoveredTables');
     cy.get('[aria-label="Solar events"]').should('be.visible');
     cy.get('.event').last().find('.missing').should('have.text', 'Unavailable');
     cy.get('.event .digits').should('have.length', 3);
@@ -411,7 +562,7 @@ describe('Evening planner', () => {
         timezone: { id: 'Europe/Paris' },
       },
     }).as('location');
-    cy.intercept('GET', '/api/evening?*', evening);
+    interceptUsno(evening);
     cy.intercept('GET', '/api/uv?*', forecast);
     cy.visit('/', {
       onBeforeLoad(win) {

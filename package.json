@@ -12,6 +12,7 @@
     "build": "vite build",
     "build:node": "GLOAM_BUILD_TARGET=node vite build",
     "check:vercel": "node scripts/check-vercel-build.mjs",
+    "check:usno": "node scripts/check-usno.mjs",
     "preview": "vite preview --host 127.0.0.1",
     "start": "node build",
     "prepare": "svelte-kit sync || true",
@@ -33,6 +34,7 @@
     "@vercel/functions": "^3.9.7",
     "bits-ui": "^2.19.2",
     "fflate": "^0.8.3",
+    "undici": "^7.30.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

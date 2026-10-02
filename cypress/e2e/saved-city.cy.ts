@@ -1,3 +1,6 @@
+import type { Interception } from 'cypress/types/net-stubbing';
+import { interceptUsno, waitForEvening } from '../support/usno';
+
 const savedCity = {
   id: 5128581,
   name: 'Saved New York',
@@ -27,20 +30,13 @@ const london = {
 
 function openSavedCity(city = savedCity, now = Date.UTC(2026, 8, 13, 18)) {
   cy.clock(now, ['Date', 'setInterval', 'clearInterval']);
-  cy.intercept('GET', '/api/evening?*', (request) => {
-    const date = new URL(request.url).searchParams.get('date');
-    request.reply({
-      date,
-      events: ['sunset', 'civil', 'nautical', 'astronomical'].map((kind) => ({
-        kind,
-        at: `${date}T23:00:00.000Z`,
-        status: 'occurs',
-      })),
-      source: 'USNO',
-      sourceUrl: 'https://aa.usno.navy.mil/data/RS_OneYear',
-      retrievedAt: '2026-09-13T18:00:00Z',
-    });
-  }).as('evening');
+  interceptUsno({
+    events: ['sunset', 'civil', 'nautical', 'astronomical'].map((kind) => ({
+      kind,
+      at: '2026-09-13T23:00:00.000Z',
+      status: 'occurs',
+    })),
+  });
   cy.intercept('GET', '/api/uv?*', {
     status: 'outside-horizon',
     points: [],
@@ -53,7 +49,7 @@ function openSavedCity(city = savedCity, now = Date.UTC(2026, 8, 13, 18)) {
       win.localStorage.setItem('gloam.city.v1', JSON.stringify(city));
     },
   });
-  cy.wait('@evening');
+  waitForEvening();
   cy.wait('@uv');
   cy.get('[aria-label="Solar events"]').should('be.visible');
 }
@@ -86,18 +82,27 @@ describe('Saved city updates', () => {
     openSavedCity();
     cy.get('h1').should('have.text', savedCity.name);
     cy.get('input[type="date"]').invoke('val', '2027-01-01').trigger('change', { force: true });
-    cy.wait('@evening');
+    waitForEvening();
     cy.wait('@uv');
     release();
     cy.wait('@cityLookup');
-    for (const request of ['@evening', '@uv']) {
-      cy.wait(request).then(({ request }) => {
-        const query = new URL(request.url).searchParams;
-        expect(query.get('latitude')).to.equal(String(updatedCity.latitude));
-        expect(query.get('longitude')).to.equal(String(updatedCity.longitude));
-        expect(query.get('date')).to.equal('2027-01-01');
+    waitForEvening();
+    cy.get('@evening.all').then((interceptions) => {
+      const queries = (interceptions as unknown as Interception[])
+        .slice(-4)
+        .map(({ request }) => new URL(request.url).searchParams);
+      queries.forEach((query) => {
+        expect(query.get('lat')).to.equal(updatedCity.latitude.toFixed(4));
+        expect(query.get('lon')).to.equal(updatedCity.longitude.toFixed(4));
+        expect(query.get('year')).to.equal('2027');
       });
-    }
+    });
+    cy.wait('@uv').then(({ request }) => {
+      const query = new URL(request.url).searchParams;
+      expect(query.get('latitude')).to.equal(String(updatedCity.latitude));
+      expect(query.get('longitude')).to.equal(String(updatedCity.longitude));
+      expect(query.get('date')).to.equal('2027-01-01');
+    });
     cy.get('h1').should('have.text', updatedCity.name);
     cy.get('input[type="date"]').should('have.value', '2027-01-01');
     expectStoredCity(updatedCity);
@@ -110,7 +115,8 @@ describe('Saved city updates', () => {
     cy.get('input[type="date"]').should('have.value', '2026-09-14');
     release();
     cy.wait('@cityLookup');
-    cy.wait('@evening').then(({ request }) => {
+    waitForEvening();
+    cy.wait('@uv').then(({ request }) => {
       const query = new URL(request.url).searchParams;
       expect(query.get('timezone')).to.equal(correctedCity.timezone);
       expect(query.get('date')).to.equal('2026-09-13');
@@ -128,13 +134,13 @@ describe('Saved city updates', () => {
     cy.get('input[aria-label="Search cities"]').type('London');
     cy.wait('@citySearch');
     cy.contains('.results button', 'England, United Kingdom').click();
-    cy.wait('@evening');
+    waitForEvening();
     cy.wait('@uv');
     release();
     cy.wait('@cityLookup');
     cy.get('h1').should('have.text', london.name);
     expectStoredCity(london);
-    cy.get('@evening.all').should('have.length', 2);
+    cy.get('@evening.all').should('have.length', 8);
   });
 
   for (const [description, city, statusCode] of [
@@ -152,7 +158,7 @@ describe('Saved city updates', () => {
       cy.get('h1').should('have.text', savedCity.name);
       cy.get('[aria-label="Solar events"]').should('be.visible');
       expectStoredCity(savedCity);
-      cy.get('@evening.all').should('have.length', 1);
+      cy.get('@evening.all').should('have.length', 4);
     });
   }
 

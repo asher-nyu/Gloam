@@ -28,6 +28,7 @@
     fullTimeZoneLabel,
   } from '$lib/domain/time';
   import { citySchema } from '$lib/domain/validation';
+  import { getBrowserEvening } from '$lib/usno/browser';
   import type { City, Evening, UvForecast } from '$lib/domain/types';
 
   let city = $state<City | null>(null);
@@ -55,46 +56,62 @@
 
   async function refresh() {
     if (!city || !date) return;
+    const selectedCity = city;
+    const selectedDate = date;
     const id = ++requestId;
     abort?.abort();
-    abort = new AbortController();
+    const controller = new AbortController();
+    abort = controller;
+    const signal = controller.signal;
     loading = true;
+    uvLoading = true;
     error = '';
     evening = null;
     uv = null;
-    void refreshUv(id, abort.signal);
-    const query = new URLSearchParams({
-      latitude: String(city.latitude),
-      longitude: String(city.longitude),
-      timezone: city.timezone,
-      date,
-    });
+    let sunset: string | null = null;
     try {
-      const response = await fetch(`/api/evening?${query}`, { signal: abort.signal });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.error);
-      if (id === requestId) evening = body;
+      const value = await getBrowserEvening(
+        selectedCity.latitude,
+        selectedCity.longitude,
+        selectedDate,
+        selectedCity.timezone,
+        signal,
+      );
+      if (id !== requestId || signal.aborted) return;
+      evening = value;
+      sunset = value.events.find((event) => event.kind === 'sunset')?.at ?? null;
     } catch {
-      if (id === requestId && !abort.signal.aborted)
+      if (id === requestId && !signal.aborted)
         error = 'We couldn’t load evening times. Please try again.';
     } finally {
-      if (id === requestId) loading = false;
+      if (id === requestId && !signal.aborted) {
+        loading = false;
+        void refreshUv(id, signal, selectedCity, selectedDate, sunset);
+      }
     }
   }
-  async function refreshUv(id = requestId, signal = abort?.signal) {
-    if (!city || !date) return;
+  async function refreshUv(
+    id = requestId,
+    signal = abort?.signal,
+    selectedCity = city,
+    selectedDate = date,
+    sunset = evening?.events.find((event) => event.kind === 'sunset')?.at ?? null,
+  ) {
+    if (!selectedCity || !selectedDate || id !== requestId || signal?.aborted) return;
     uvLoading = true;
+    uv = null;
     const query = new URLSearchParams({
-      latitude: String(city.latitude),
-      longitude: String(city.longitude),
-      timezone: city.timezone,
-      date,
+      latitude: String(selectedCity.latitude),
+      longitude: String(selectedCity.longitude),
+      timezone: selectedCity.timezone,
+      date: selectedDate,
+      ...(sunset ? { sunset } : {}),
     });
     try {
-      const response = await fetch(`/api/uv?${query}`, { signal });
+      const response = await fetch(`/api/uv?${query}`, { signal, cache: 'no-store' });
       if (!response.ok) throw new Error();
       const value = await response.json();
-      if (id === requestId) uv = value;
+      if (id === requestId && !signal?.aborted) uv = value;
     } catch {
       if (id === requestId && !signal?.aborted) uv = null;
     } finally {

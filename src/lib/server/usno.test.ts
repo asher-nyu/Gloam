@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { jest } from '@jest/globals';
 import { parseUsnoTable } from './usno-parser';
-import { getEvening } from './usno';
+import { getEvening, sourceUrl } from './usno';
 
 const fixture = (city: string, task = 4) =>
   readFileSync(
@@ -53,6 +53,13 @@ test('preserves duplicate-day continuation rows and blank fields', () => {
   expect(table.find((day) => day.date === '2026-02-12')?.setting).toEqual([]);
   expect(table.find((day) => day.date === '2026-02-12')?.status).toBe('no-crossing');
 });
+test('identifies Gloam in live USNO requests using Universal Time', () => {
+  const url = new URL(sourceUrl(40.71427, -74.00597, 2026, 'astronomical'));
+  expect(url.origin).toBe('https://aa.usno.navy.mil');
+  expect(url.searchParams.get('ID')).toBe('Gloam');
+  expect(url.searchParams.get('task')).toBe('4');
+  expect(url.searchParams.get('tz')).toBe('0');
+});
 test('assembles a city evening from both UTC dates', async () => {
   const result = await getEvening(40.7128, -74.006, '2026-09-13', 'America/New_York');
   expect(result.events.map((event) => event.at)).toEqual([
@@ -61,6 +68,30 @@ test('assembles a city evening from both UTC dates', async () => {
     '2026-09-14T00:08:00.000Z',
     '2026-09-14T00:41:00.000Z',
   ]);
+});
+test('repeated identical evenings request all four USNO tables again', async () => {
+  const fetchMock = jest.mocked(globalThis.fetch);
+  const before = fetchMock.mock.calls.length;
+  await getEvening(40.7128, -74.012, '2026-09-13', 'America/New_York');
+  expect(fetchMock.mock.calls.length - before).toBe(4);
+  await getEvening(40.7128, -74.012, '2026-09-13', 'America/New_York');
+  expect(fetchMock.mock.calls.length - before).toBe(8);
+});
+test('a new upstream outage rejects instead of retaining a previously successful evening', async () => {
+  const fetchMock = jest.mocked(globalThis.fetch);
+  const successfulFetch = fetchMock.getMockImplementation()!;
+  const previous = await getEvening(40.7128, -74.013, '2026-09-13', 'America/New_York');
+  expect(previous.events.every((event) => event.status === 'occurs')).toBe(true);
+  const before = fetchMock.mock.calls.length;
+  fetchMock.mockImplementation(async () => new Response('Unavailable', { status: 503 }));
+  try {
+    await expect(getEvening(40.7128, -74.013, '2026-09-13', 'America/New_York')).rejects.toThrow(
+      'Evening times could not be retrieved from USNO.',
+    );
+    expect(fetchMock.mock.calls.length - before).toBe(4);
+  } finally {
+    fetchMock.mockImplementation(successfulFetch);
+  }
 });
 test('a missing sunset feed does not borrow yesterday’s after-midnight twilight', async () => {
   const result = await getEvening(40.7128, -74.007, '2026-09-13', 'America/New_York');
